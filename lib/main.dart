@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:dog_friendly_map/utils/translations.dart';
 
 void main() {
   runApp(const MyApp());
@@ -67,8 +68,23 @@ class MainMapScreen extends StatefulWidget {
 }
 
 class _MainMapScreenState extends State<MainMapScreen> {
-  final List<String> _categories = ['Кафе', 'Рестораны', 'Парки', 'Площадки'];
-  String _selectedCategory = 'Кафе';
+  
+  String _currentLang = 'ru';
+
+  final List<String> _categories = ['cafe', 'restaurant', 'park', 'playground'];
+String _selectedCategory = 'cafe'; // И тут тоже системное слово! 
+
+  void _toggleLanguage() {
+    setState(() {
+      if (_currentLang == 'ru') {
+        _currentLang = 'en';
+      } else if (_currentLang == 'en') {
+        _currentLang = 'ua';
+      } else {
+        _currentLang = 'ru';
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -81,6 +97,8 @@ class _MainMapScreenState extends State<MainMapScreen> {
 
           // СЛОЙ 1: Заглушка под будущую карту (теперь меняет цвет!)
           Container(
+            width: double.infinity,
+            height: double.infinity,
             // Если тема темная — красим в темно-серый, если светлая — в светло-серый
             color: isDark ? Colors.grey[900] : Colors.grey[200],
             child: Center(
@@ -93,13 +111,13 @@ class _MainMapScreenState extends State<MainMapScreen> {
                     color: isDark ? Colors.grey[600] : Colors.grey,
                   ),
                   const SizedBox(height: 10),
-                  Text(
-                    'Тут будет интерактивная карта',
-                    style: TextStyle(
-                      color: isDark ? Colors.grey[400] : Colors.grey,
-                      fontSize: 18,
-                    ),
-                  ),
+                  // Text(
+                  //   'нюхай хуй',
+                  //   style: TextStyle(
+                  //     color: isDark ? Colors.grey[400] : Colors.grey,
+                  //     fontSize: 18,
+                  //   ),
+                  // ),
                 ],
               ),
             ),
@@ -120,7 +138,7 @@ class _MainMapScreenState extends State<MainMapScreen> {
                   child: TextField(
                     style: TextStyle(color: isDark ? Colors.white : Colors.black),
                     decoration: InputDecoration(
-                      hintText: 'Поиск',
+                      hintText: AppTranslations.data[_currentLang]!['search_hint']!,
                       hintStyle: TextStyle(color: isDark ? Colors.grey[400] : Colors.grey),
                       prefixIcon: Icon(Icons.search, color: isDark ? Colors.grey[400] : Colors.grey),
                       border: OutlineInputBorder(
@@ -147,7 +165,7 @@ class _MainMapScreenState extends State<MainMapScreen> {
                       return Padding(
                         padding: const EdgeInsets.only(right: 8.0),
                         child: ChoiceChip(
-                          label: Text(category),
+                          label: Text(AppTranslations.data[_currentLang]![category]!),
                           selected: isSelected,
                           onSelected: (bool selected) {
                             setState(() {
@@ -178,6 +196,28 @@ class _MainMapScreenState extends State<MainMapScreen> {
               ),
             ),
           ),
+
+          // СЛОЙ 4: Кнопка переключения языка
+          Positioned(
+            bottom: 40,
+            left: 16, // Ставим слева, чтобы не налезла на кнопку темы
+            child: FloatingActionButton(
+              // Важно: если на экране две таких кнопки, им нужны разные теги, иначе Flutter ругнется
+              heroTag: 'lang_btn', 
+              backgroundColor: isDark ? Colors.grey[800] : Colors.white,
+              onPressed: _toggleLanguage, // Вызываем нашу функцию из Шага 1
+              child: Text(
+                // Выводим текущий язык большими буквами (RU, EN, UA)
+                _currentLang.toUpperCase(), 
+                style: TextStyle(
+                  color: isDark ? Colors.white : Colors.black,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+            ),
+          ),
+          // --------------------------------
 
         ],
       ),

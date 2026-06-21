@@ -5,6 +5,10 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:dog_friendly_map/data/mock_places.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter_compass/flutter_compass.dart';
+import 'dart:math' as math;
+import 'dart:async';
+import 'dart:ui' as ui;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -95,7 +99,7 @@ class _MyAppState extends State<MyApp> {
 }
 
 
-// === БЛОК 2: ГЛАВНЫЙ ЭКРАН (КАРТА И ЛОГИКА) ===
+// === БЛОК 2: ГЛАВНЫЙ ЭКРАН (КАРТА, ЖИВОЙ КОМПАС И АНИМАЦИИ) ===
 
 class MainMapScreen extends StatefulWidget {
   final ThemeMode currentThemeMode;
@@ -115,7 +119,8 @@ class MainMapScreen extends StatefulWidget {
   State<MainMapScreen> createState() => _MainMapScreenState();
 }
 
-class _MainMapScreenState extends State<MainMapScreen> {
+// плавные анимации внутри класса
+class _MainMapScreenState extends State<MainMapScreen> with TickerProviderStateMixin {
   final MapController _mapController = MapController();
 
   // ТВОЙ БЛОК ПЕРЕМЕННЫХ
@@ -124,16 +129,21 @@ class _MainMapScreenState extends State<MainMapScreen> {
   DogFriendlyPlace? _selectedPlace;
   double _sheetExtent = 0.3;
   bool _isPlaceLiked = false;
-  LatLng? _currentUserLocation;
 
-  dynamic _positionStreamSubscription;
+  LatLng? _currentUserLocation;
+  double? _compassHeading; // Хранилище для угла поворота телефона
+
+  StreamSubscription<Position>? _positionStreamSubscription;
+  StreamSubscription<CompassEvent>? _compassStreamSubscription;
 
   @override
   void initState() {
     super.initState();
     _startLiveLocationTracking();
+    _startCompassTracking();
   }
 
+  // Бесконечный стрим GPS координат
   void _startLiveLocationTracking() async {
     bool serviceEnabled;
     LocationPermission permission;
@@ -151,19 +161,62 @@ class _MainMapScreenState extends State<MainMapScreen> {
 
     _positionStreamSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 2,
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 0,
       ),
     ).listen((Position position) {
+      if (!mounted) return;
       setState(() {
         _currentUserLocation = LatLng(position.latitude, position.longitude);
       });
     });
   }
 
+  // Бесконечный стрим компаса телефона
+  void _startCompassTracking() {
+    _compassStreamSubscription = FlutterCompass.events?.listen((CompassEvent event) {
+      if (!mounted) return;
+      setState(() {
+        _compassHeading = event.heading; // Получаем угол в градусах (0 - север, 180 - юг)
+      });
+    });
+  }
+
+  // МАГИЯ АНИМАЦИИ: Плавный перелет в любую точку карты вместо резкого прыжка
+  void _animatedMapMove(LatLng destLocation, double destZoom) {
+    // Вычисляем стартовые позиции камеры прямо сейчас
+    final double startLat = _mapController.camera.center.latitude;
+    final double startLng = _mapController.camera.center.longitude;
+    final double startZoom = _mapController.camera.zoom;
+
+    // Создаем локальный контроллер анимации на 1 секунду
+    final AnimationController animationController = AnimationController(
+      duration: const Duration(milliseconds: 1000),
+      vsync: this,
+    );
+
+    // Задаем красивую кривую скорости (быстрый старт, мягкое замедление в конце)
+    final Animation<double> curveAnimation = CurvedAnimation(
+      parent: animationController,
+      curve: Curves.fastOutSlowIn,
+    );
+
+    animationController.addListener(() {
+      // Математически интерполируем координаты на каждом кадре анимации
+      final double currentLat = startLat + (destLocation.latitude - startLat) * curveAnimation.value;
+      final double currentLng = startLng + (destLocation.longitude - startLng) * curveAnimation.value;
+      final double currentZoom = startZoom + (destZoom - startZoom) * curveAnimation.value;
+
+      _mapController.move(LatLng(currentLat, currentLng), currentZoom);
+    });
+
+    // Запускаем анимацию вперед, а после завершения — чисто удаляем контроллер из памяти
+    animationController.forward().then((_) => animationController.dispose());
+  }
+
   void _goToMyLocation() {
     if (_currentUserLocation != null) {
-      _mapController.move(_currentUserLocation!, 15.0);
+      _animatedMapMove(_currentUserLocation!, 16.0); // Летим плавно на уровень зума 16
     } else {
       _startLiveLocationTracking();
     }
@@ -172,6 +225,7 @@ class _MainMapScreenState extends State<MainMapScreen> {
   @override
   void dispose() {
     _positionStreamSubscription?.cancel();
+    _compassStreamSubscription?.cancel(); // Чистим компас
     super.dispose();
   }
 
@@ -220,10 +274,8 @@ class _MainMapScreenState extends State<MainMapScreen> {
   Widget build(BuildContext context) {
     final isDark = widget.currentThemeMode == ThemeMode.dark;
     final lang = widget.currentLang;
-
     final double screenHeight = MediaQuery.of(context).size.height;
 
-    // Высчитываем динамический отступ для кнопки GPS
     final double gpsButtonBottom = _selectedPlace != null
         ? (screenHeight * _sheetExtent) + 16
         : 32.0;
@@ -232,7 +284,7 @@ class _MainMapScreenState extends State<MainMapScreen> {
       body: Stack(
         children: [
 
-          // СЛОЙ 1: Карта (Самый нижний слой)
+          // СЛОЙ 1: Карта
           FlutterMap(
             mapController: _mapController,
             options: MapOptions(
@@ -250,37 +302,51 @@ class _MainMapScreenState extends State<MainMapScreen> {
             children: [
               TileLayer(
                 urlTemplate: isDark
-                    ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png' // Угольный минимализм для ночи
-                    : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', // Сочный контрастный минимализм Voyager
+                    ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+                    : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
                 subdomains: const ['a', 'b', 'c', 'd'],
                 userAgentPackageName: 'com.example.dog_friendly_map',
               ),
 
               MarkerLayer(
                 markers: [
-                  // 1. СИНЯЯ ТОЧКА ЮЗЕРА
+                  // 1. ПРОКАЧАННАЯ СИНЯЯ ТОЧКА ЮЗЕРА С ЛУЧОМ ВЗГЛЯДА
                   if (_currentUserLocation != null)
                     Marker(
                       point: _currentUserLocation!,
-                      width: 40,
-                      height: 40,
+                      width: 100, // Увеличили размер контейнера под длину луча
+                      height: 100,
                       alignment: Alignment.center,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: Colors.blue.withOpacity(0.2),
-                          shape: BoxShape.circle,
-                        ),
-                        child: Center(
-                          child: Container(
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          // Слой луча: крутится под воздействием компаса телефона
+                          if (_compassHeading != null)
+                            Transform.rotate(
+                              angle: (_compassHeading! * (math.pi / 180)), // Переводим градусы в радианы
+                              child: SizedBox(
+                                width: 100,
+                                height: 100,
+                                child: CustomPaint(
+                                  painter: CompassConePainter(), // Наш кастомный неоновый конус
+                                ),
+                              ),
+                            ),
+
+                          // Центральное синее ядро точки юзера
+                          Container(
                             width: 18,
                             height: 18,
                             decoration: BoxDecoration(
                               color: Colors.blue,
                               shape: BoxShape.circle,
                               border: Border.all(color: Colors.white, width: 2),
+                              boxShadow: const [
+                                BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))
+                              ],
                             ),
                           ),
-                        ),
+                        ],
                       ),
                     ),
 
@@ -300,6 +366,8 @@ class _MainMapScreenState extends State<MainMapScreen> {
                           _isPlaceLiked = false;
                           _sheetExtent = 0.3;
                         });
+                        // АПГРЕЙД: При тапе на лапку карта сама плавно летит центрироваться на неё!
+                        _animatedMapMove(place.coordinates, 15.5);
                       },
                       child: _buildCustomPin(place.category),
                     ),
@@ -478,7 +546,7 @@ class _MainMapScreenState extends State<MainMapScreen> {
               ),
             ),
 
-          // СЛОЙ 5: Панель поиска и фильтры
+          // СЛОЙ 5: Самый верхний слой — Панель поиска и фильтры
           Positioned(
             top: 60,
             left: 16,
@@ -550,6 +618,34 @@ class _MainMapScreenState extends State<MainMapScreen> {
       ),
     );
   }
+}
+
+// === КАСТОМНЫЙ ГРАФИЧЕСКИЙ ОТРИСОВЩИК ЛУЧА ВЗГЛЯДА КОМПАСА ===
+class CompassConePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Делаем мягкий полупрозрачный градиент от насыщенного синего у центра к невидимому на конце
+    final paint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.bottomCenter,
+        end: Alignment.topCenter,
+        colors: [
+          Colors.blue.withOpacity(0.4),
+          Colors.blue.withOpacity(0.0),
+        ],
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+
+    final path = ui.Path()
+      ..moveTo(size.width / 2, size.height / 2) // Стартуем строго из центра синей точки
+      ..lineTo(size.width / 2 - 25, 0)         // Левый край луча взгляда сверху
+      ..lineTo(size.width / 2 + 25, 0)         // Правый край луча взгляда сверху
+      ..close();                                // Замыкаем треугольный конус
+
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 // === БЛОК 3: ЭКРАН НАСТРОЕК ===
